@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kino Bratislava</title>
+<style>
+:root{--bg:#fafafa;--fg:#1c1c1e;--mut:#6b6b70;--card:#fff;--bd:#e2e2e6;--red:#fde8e8;--redb:#e5484d;--acc:#2f6fed}
+@media(prefers-color-scheme:dark){:root{--bg:#131316;--fg:#ececf0;--mut:#9a9aa3;--card:#1d1d22;--bd:#33333a;--red:#3a1a1c;--redb:#e5484d;--acc:#6b9bff}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);padding:16px;max-width:1200px;margin-inline:auto}
+.bar{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:10px 0;position:sticky;top:0;background:var(--bg);z-index:5;border-bottom:1px solid var(--bd)}
+.bar label{cursor:pointer;white-space:nowrap}button{font:inherit;cursor:pointer;border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:6px;padding:4px 10px}
+#status{color:var(--mut);font-size:13px;width:100%}#panel{display:none;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:12px;margin:12px 0}
+#panel.open{display:block}#panel li{display:flex;justify-content:space-between;gap:8px;padding:3px 0}
+h2{margin:24px 0 8px;font-size:17px;text-transform:capitalize}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
+.card{position:relative;display:block;color:inherit;text-decoration:none;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
+.card:hover{border-color:var(--acc)}.card.end{background:var(--red);border-color:var(--redb)}
+.t{font-weight:600;padding-right:36px}.s{color:var(--mut);font-size:13px}.m{margin-top:6px;font-size:13px;display:flex;flex-wrap:wrap;gap:4px 10px}
+.time{font-weight:700;font-size:16px}.tag{color:var(--redb);font-weight:600}
+.hide{position:absolute;top:6px;right:6px;width:36px;height:36px;padding:0;display:none;align-items:center;justify-content:center;border-radius:50%}
+.card:hover .hide{display:flex}@media(hover:none){.hide{display:flex}}.hide svg{width:20px;height:20px}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;opacity:0;transition:.2s;pointer-events:none}
+#toast.on{opacity:1}input[type=text]{width:100%;font:inherit;padding:4px}
+</style>
+</head>
+<body>
+<div class="bar">
+  <label><input type="checkbox" data-p="sk"> Skry slovenské/české</label>
+  <label><input type="checkbox" data-p="kids"> Skry detské</label>
+  <label><input type="checkbox" data-p="dub"> Skry dabované</label>
+  <span>|</span>
+  <label><input type="checkbox" data-s="lum"> Lumière</label>
+  <label><input type="checkbox" data-s="aup"> CC Aupark</label>
+  <label><input type="checkbox" data-s="eur"> CC Eurovea</label>
+  <button id="hbtn">Skryté (0)</button><button id="rbtn">Obnoviť dáta</button>
+  <div id="status"></div>
+</div>
+<div id="panel">
+  <b>Individuálne skryté filmy</b><ul id="hlist" style="list-style:none;padding:0"></ul>
+  <details><summary>Advanced</summary>
+    CORS proxy fallback (used only if a direct request fails; empty = off):
+    <input type="text" id="proxy">
+  </details>
+</div>
+<div id="out"></div><div id="toast"></div>
+<script>
+const SRC={lum:'Lumière',aup:'Cinema City Aupark',eur:'Cinema City Eurovea'};
+const CC_ID={aup:1012,eur:1010};
+const CC_BASE='https://www.cinemacity.sk/sk/data-api-service/v1/quickbook/10105/';
+const CC_PATHS=['film-events-dates/in-cinema/{id}/as-at-date/{d}?attr=&lang=sk_SK','film-events/in-cinema/{id}/at-date/{d}?attr=&lang=sk_SK'];
+const $=s=>document.querySelector(s), pad=n=>String(n).padStart(2,'0');
+const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const norm=s=>(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\([^)]*dabing[^)]*\)|\bukr\b|\bdabing\b/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const load=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}};
+const store=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){console.warn('storage',e)}};
+let prefs=Object.assign({sk:false,kids:false,dub:false,src:{lum:true,aup:true,eur:true},hidden:{},proxy:'https://corsproxy.io/?url='},load('kino.prefs',{}));
+let cache=load('kino.cache',{day:'',src:{}}); const undo=[]; let status=[];
+const savePrefs=()=>store('kino.prefs',prefs);
+
+async function get(url,json){
+  const tryOne=async u=>{const r=await fetch(u,{signal:AbortSignal.timeout(15000)});if(!r.ok)throw new Error('HTTP '+r.status);return json?r.json():r.text()};
+  try{return await tryOne(url)}catch(e){
+    if(!prefs.proxy)throw e;
+    return await tryOne(prefs.proxy+encodeURIComponent(url));
+  }
+}
+const toMin=t=>{const m=(t||'').match(/(\d+):(\d+)/);return m?+m[1]*60+ +m[2]:-1};
+
+// ---------- Lumière ----------
+function parseLum(html,today){
+  const doc=new DOMParser().parseFromString(html,'text/html');
+  const txt=el=>{const c=el.cloneNode(true);c.querySelectorAll('*').forEach(n=>n.append(' '));return c.textContent.replace(/\s+/g,' ').trim()};
+  const dates=[];
+  doc.querySelectorAll('a').forEach(a=>{
+    const t=txt(a),m=t.length<30&&t.match(/(\d{1,2})\.\s?(\d{1,2})\.$/);if(!m)return;
+    let y=today.getFullYear();if(+m[2]<today.getMonth()+1-6)y++;
+    const d=`${y}-${pad(m[2])}-${pad(m[1])}`;if(!dates.includes(d))dates.push(d);
+  });
+  const hs=[...doc.querySelectorAll('h2')].filter(h=>h.querySelector('a[href*="/film-"]')&&/\d+\s*min/.test(h.textContent));
+  if(!hs.length)throw new Error('no screenings found in HTML');
+  const box=h=>{let c=h;for(let i=0;i<3&&c.parentElement&&hs.filter(x=>c.parentElement.contains(x)).length===1;i++)c=c.parentElement;return c};
+  const info=hs.map(h=>{
+    const m=txt(h).match(/^(.*?)\s+(\d+)\s*min\s*(.*)$/);if(!m)return null;
+    const [,head,len,rest]=m,bt=txt(box(h));
+    const fmt=(bt.match(/\b(?:2D|3D|35\s?mm|4K)\S*(?: a \S+)?/)||[''])[0];
+    const age=+((fmt.match(/(\d{1,2})$/)||[])[1]??99);
+    const before=rest.replace(/,?\s*\d{4}\s*$/,'');
+    return {h,title:head.split('|')[0].trim(),label:head.split('|').slice(1).join('|'),len:+len,
+      year:(rest.match(/(\d{4})\s*$/)||[])[1]||'',orig:before.includes(';')?before.split(';')[0].trim():'',
+      time:(bt.match(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/)||[''])[0],
+      url:new URL(h.querySelector('a[href*="/film-"]').getAttribute('href'),'https://www.kino-lumiere.sk/').href,
+      dub:/(?:2D|3D|mm|4K)\S*?(ČD|SD)(?=\d|\s|$)/.test(fmt),kids:/junior|baby|deťom|detsk/i.test(head)||age<=7};
+  }).filter(Boolean);
+  let lca=hs[0];while(lca&&!hs.every(x=>lca.contains(x)))lca=lca.parentElement;
+  let groups=[...lca.children].map(c=>info.filter(i=>c.contains(i.h))).filter(g=>g.length);
+  if(groups.length!==dates.length){groups=[];let prev=-1;info.forEach(i=>{const t=toMin(i.time);if(!groups.length||t<prev)groups.push([]);groups.at(-1).push(i);prev=t})}
+  const rows=[];groups.forEach((g,idx)=>{const date=dates[idx];if(!date)return;
+    g.forEach(i=>rows.push({src:'lum',date,time:i.time,title:i.title,orig:i.orig,year:i.year,len:i.len,url:i.url,sk:!i.orig,kids:i.kids,dub:i.dub}))});
+  return {rows,dates:dates.slice(0,groups.length)};
+}
+
+// ---------- Cinema City ----------
+function parseCC(j,src){
+  const b=j.body||j,films=new Map((b.films||[]).map(f=>[f.id,f])),evs=b.events;
+  if(!Array.isArray(evs))throw new Error('unexpected response shape: '+Object.keys(b).join(','));
+  return evs.map(ev=>{
+    const f=films.get(ev.filmId)||{},at=[...new Set([...(f.attributeIds||[]),...(ev.attributeIds||[])])];
+    const sub=at.some(a=>a.includes('subbed'));
+    return {src,date:(ev.eventDateTime||'').slice(0,10),time:(ev.eventDateTime||'').slice(11,16),title:f.name||'?',orig:'',
+      year:f.releaseYear||'',len:f.length||'',url:f.link||f.url||ev.compositeBookingLink||'https://www.cinemacity.sk/',
+      sk:(at.includes('original-lang-sk')||at.includes('original-lang-cs'))&&!sub,
+      dub:at.some(a=>a.startsWith('dubbed')),kids:['suitable-for-all','7-plus','family'].some(a=>at.includes(a))};
+  });
+}
+
+// ---------- Gather (max once per day) ----------
+async function gather(force){
+  const today=iso(new Date());
+  if(force||cache.day!==today)cache={day:today,src:{}};
+  const need=Object.keys(SRC).filter(s=>prefs.src[s]&&!cache.src[s]);status=[];
+  if(!need.length)return;
+  if(need.includes('lum')){
+    try{const r=parseLum(await get('https://www.kino-lumiere.sk/'),new Date());cache.src.lum=r;status.push(`Lumière: ${r.rows.length} projekcií, ${r.dates.length} dní`);console.log('Lumière sample',r.rows.slice(0,3))}
+    catch(e){status.push('Lumière zlyhalo: '+e.message)}
+  }
+  let dates=cache.src.lum?.dates;if(!dates?.length){dates=[];for(let i=0;i<10;i++){const d=new Date();d.setDate(d.getDate()+i);dates.push(iso(d))}}
+  for(const s of need.filter(x=>x!=='lum')){
+    const rows=[],missing=[];
+    for(const d of dates){
+      let ok=false,err;
+      for(const p of CC_PATHS){
+        try{const r=parseCC(await get(CC_BASE+p.replace('{id}',CC_ID[s]).replace('{d}',d),true),s);rows.push(...r.filter(x=>x.date===d));ok=true;break}catch(e){err=e}
+      }
+      if(!ok||!rows.some(x=>x.date===d))missing.push(d.slice(5));
+      await sleep(250);
+    }
+    if(rows.length)cache.src[s]={rows,dates};
+    status.push(`${SRC[s]}: ${rows.length} projekcií`+(missing.length?` (bez dát: ${missing.join(', ')})`:''));
+  }
+  store('kino.cache',cache);
+}
+
+// ---------- Render ----------
+const EYE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
+function render(){
+  const enabled=Object.keys(SRC).filter(s=>prefs.src[s]&&cache.src[s]);
+  const all=enabled.flatMap(s=>cache.src[s].rows);
+  const origs=new Map();all.forEach(r=>{if(r.orig)origs.set(norm(r.title),r.orig)});
+  const years=new Map();all.forEach(r=>{if(r.src==='lum'&&r.year)years.set(norm(r.title),r.year)});
+  all.forEach(r=>{r.key=norm(r.title);if(!r.orig)r.orig=origs.get(r.key)||'';if(!r.year)r.year=years.get(r.key)||''});
+  const vis=all.filter(r=>r.date&&!prefs.hidden[r.key]&&!(prefs.sk&&r.sk)&&!(prefs.kids&&r.kids)&&!(prefs.dub&&r.dub));
+  const days=[...new Set(enabled.flatMap(s=>cache.src[s].dates).concat(vis.map(r=>r.date)))].sort(),idx=d=>days.indexOf(d);
+  // last day where every enabled source has data
+  let lastKnown=-1;days.forEach((d,i)=>{if(enabled.every(s=>cache.src[s].rows.some(r=>r.date===d)))lastKnown=i});
+  const last=new Map();vis.forEach(r=>last.set(r.key,Math.max(last.get(r.key)??-1,idx(r.date))));
+  const byDay=new Map();vis.forEach(r=>{(byDay.get(r.date)||byDay.set(r.date,[]).get(r.date)).push(r)});
+  let h='';
+  for(const d of days){
+    const rs=(byDay.get(d)||[]).sort((a,b)=>a.time.localeCompare(b.time)||a.title.localeCompare(b.title));if(!rs.length)continue;
+    h+=`<h2>${new Date(d+'T12:00').toLocaleDateString('sk-SK',{weekday:'long',day:'numeric',month:'numeric'})}</h2><div class="grid">`;
+    for(const r of rs){
+      const L=last.get(r.key),end=L-idx(r.date)<=1&&L<=lastKnown-3;
+      const main=r.orig||r.title,sub=r.orig&&norm(r.orig)!==r.key?r.title:'';
+      h+=`<a class="card${end?' end':''}" href="${esc(r.url)}" target="_blank" rel="noopener" data-k="${esc(r.key)}" data-n="${esc(main)}">
+        <button class="hide" title="Skryť film">${EYE}</button><div class="t">${esc(main)}</div>${sub?`<div class="s">${esc(sub)}</div>`:''}
+        <div class="m"><span class="time">${esc(r.time)}</span><span>${esc(r.year)}</span><span>${r.len?esc(r.len)+' min':''}</span><span>${SRC[r.src]}</span>${end?'<span class="tag">posledné dni</span>':''}</div></a>`;
+    }
+    h+='</div>';
+  }
+  $('#out').innerHTML=h||'<p>Žiadne projekcie (skontroluj filtre alebo stav vyššie).</p>';
+  const hk=Object.entries(prefs.hidden);$('#hbtn').textContent=`Skryté (${hk.length})`;
+  $('#hlist').innerHTML=hk.map(([k,n])=>`<li><span>${esc(n)}</span><button data-un="${esc(k)}">Zobraziť</button></li>`).join('')||'<li>Nič nie je skryté.</li>';
+  $('#status').textContent=status.join(' · ')+(cache.day?` · dáta z ${cache.day}`:'');
+}
+function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('on'),2000)}
+
+// ---------- Events ----------
+document.addEventListener('click',e=>{
+  const hb=e.target.closest('.hide');
+  if(hb){e.preventDefault();e.stopPropagation();const c=hb.closest('.card');prefs.hidden[c.dataset.k]=c.dataset.n;undo.push(c.dataset.k);savePrefs();render();toast('Skryté: '+c.dataset.n+' (Ctrl+Z späť)');return}
+  const un=e.target.closest('[data-un]');if(un){delete prefs.hidden[un.dataset.un];savePrefs();render()}
+});
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)){
+    const k=undo.pop();if(k){e.preventDefault();delete prefs.hidden[k];savePrefs();render();toast('Vrátené späť')}
+  }
+});
+document.querySelectorAll('[data-p]').forEach(i=>{i.checked=prefs[i.dataset.p];i.onchange=()=>{prefs[i.dataset.p]=i.checked;savePrefs();render()}});
+document.querySelectorAll('[data-s]').forEach(i=>{i.checked=prefs.src[i.dataset.s];i.onchange=async()=>{prefs.src[i.dataset.s]=i.checked;savePrefs();$('#status').textContent='Načítavam…';await gather();render()}});
+$('#hbtn').onclick=()=>$('#panel').classList.toggle('open');
+$('#rbtn').onclick=async()=>{$('#status').textContent='Načítavam…';await gather(true);render()};
+$('#proxy').value=prefs.proxy;$('#proxy').onchange=e=>{prefs.proxy=e.target.value.trim();savePrefs()};
+(async()=>{render();if(cache.day!==iso(new Date())||Object.keys(SRC).some(s=>prefs.src[s]&&!cache.src[s])){$('#status').textContent='Načítavam…';await gather();render()}})();
+</script>
+</body>
+</html>
