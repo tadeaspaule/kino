@@ -13,12 +13,12 @@
 #status{color:var(--mut);font-size:13px;width:100%}#panel{display:none;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:12px;margin:12px 0}
 #panel.open{display:block}#panel li{display:flex;justify-content:space-between;gap:8px;padding:3px 0}
 h2{margin:24px 0 8px;font-size:17px;text-transform:capitalize}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
-.card{position:relative;display:block;color:inherit;text-decoration:none;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
+.card{position:relative;min-height:100px;display:block;color:inherit;text-decoration:none;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
 .card:hover{border-color:var(--acc)}.card.end{background:var(--red);border-color:var(--redb)}
-.t{font-weight:600;padding-right:36px}.s{color:var(--mut);font-size:13px}.m{margin-top:6px;font-size:13px;display:flex;flex-wrap:wrap;gap:4px 10px}
+.t{font-weight:600;padding-right:36px}.s{color:var(--mut);font-size:13px}.m{margin-top:6px;padding-right:40px;font-size:13px;display:flex;flex-wrap:wrap;gap:4px 10px}
 .time{font-weight:700;font-size:16px}.tag{color:var(--redb);font-weight:600}
-.hide{position:absolute;top:6px;right:6px;width:36px;height:36px;padding:0;display:none;align-items:center;justify-content:center;border-radius:50%}
-.card:hover .hide{display:flex}@media(hover:none){.hide{display:flex}}.hide svg{width:20px;height:20px}
+.hide,.del{position:absolute;right:6px;width:36px;height:36px;padding:0;display:none;align-items:center;justify-content:center;border-radius:50%}.hide{top:6px}.del{bottom:6px}
+.card:hover .hide,.card:hover .del{display:flex}@media(hover:none){.hide,.del{display:flex}}.hide svg,.del svg{width:20px;height:20px}.del:hover{color:var(--redb);border-color:var(--redb)}.dh{display:flex;align-items:center;gap:12px;margin:24px 0 8px}.dh h2{margin:0}.dd{font-size:13px;color:var(--mut)}
 #toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;opacity:0;transition:.2s;pointer-events:none}
 #toast.on{opacity:1}input[type=text]{width:100%;font:inherit;padding:4px}
 </style>
@@ -48,16 +48,17 @@ const norm=s=>(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const load=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}};
 const store=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){console.warn('storage',e)}};
-let prefs=Object.assign({sk:false,kids:false,dub:false,src:{lum:true,aup:true,eur:true},hidden:{}},load('kino.prefs',{}));
+let prefs=Object.assign({sk:false,kids:false,dub:false,src:{lum:true,aup:true,eur:true},hidden:{},slots:{}},load('kino.prefs',{}));
 let cache={day:'',src:{}}; const undo=[]; let status=[];
 const savePrefs=()=>store('kino.prefs',prefs);
+prefs.slots=prefs.slots||{};Object.keys(prefs.slots).forEach(k=>{if(k.split('|')[1]<iso(new Date()))delete prefs.slots[k]});
 
 const toMin=t=>{const m=(t||'').match(/(\d+):(\d+)/);return m?+m[1]*60+ +m[2]:-1};
 
 // ---------- Lumière ----------
 function parseLum(html,today){
   const doc=new DOMParser().parseFromString(html,'text/html');
-  const txt=el=>{const c=el.cloneNode(true);c.querySelectorAll('*').forEach(n=>n.append(' '));return c.textContent.replace(/\s+/g,' ').trim()};
+  const txt=el=>{const c=el.cloneNode(true);c.querySelectorAll('*').forEach(n=>{n.prepend(' ');n.append(' ')});return c.textContent.replace(/\s+/g,' ').trim()};
   const dates=[];
   doc.querySelectorAll('a').forEach(a=>{
     const t=txt(a),m=t.length<30&&t.match(/(\d{1,2})\.\s?(\d{1,2})\.$/);if(!m)return;
@@ -68,8 +69,10 @@ function parseLum(html,today){
   if(!hs.length)throw new Error('no screenings found in HTML');
   const box=h=>{let c=h;for(let i=0;i<3&&c.parentElement&&hs.filter(x=>c.parentElement.contains(x)).length===1;i++)c=c.parentElement;return c};
   const info=hs.map(h=>{
-    const m=txt(h).match(/^(.*?)\s+(\d+)\s*min\s*(.*)$/);if(!m)return null;
-    const [,head,len,rest]=m,bt=txt(box(h));
+    const le=h.querySelector('.eventlenght'),se=h.querySelector('.event-subheader');let head,len,rest;
+    if(le){head=[...le.parentElement.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join(' ').replace(/\s+/g,' ').trim();len=(le.textContent.match(/\d+/)||[0])[0];rest=se?txt(se):''}
+    else{const m=txt(h).match(/^(.*?)\s+(\d+)\s*min\s*(.*)$/);if(!m)return null;[,head,len,rest]=m}
+    const bt=txt(box(h));
     const fmt=(bt.match(/\b(?:2D|3D|35\s?mm|4K)\S*(?: a \S+)?/)||[''])[0];
     const age=+((fmt.match(/(\d{1,2})$/)||[])[1]??99);
     const before=rest.replace(/,?\s*\d{4}\s*$/,'');
@@ -125,13 +128,14 @@ async function gather(){
 
 // ---------- Render ----------
 const EYE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
+const TRASH='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
 function render(){
   const enabled=Object.keys(SRC).filter(s=>prefs.src[s]&&cache.src[s]);
   const all=enabled.flatMap(s=>cache.src[s].rows);
   const origs=new Map();all.forEach(r=>{if(r.orig)origs.set(norm(r.title),r.orig)});
   const years=new Map();all.forEach(r=>{if(r.src==='lum'&&r.year)years.set(norm(r.title),r.year)});
-  all.forEach(r=>{r.key=norm(r.title);if(!r.orig)r.orig=origs.get(r.key)||'';if(!r.year)r.year=years.get(r.key)||''});
-  const vis=all.filter(r=>r.date&&!prefs.hidden[r.key]&&!(prefs.sk&&r.sk)&&!(prefs.kids&&r.kids)&&!(prefs.dub&&r.dub));
+  all.forEach(r=>{r.key=norm(r.title);r.slot=`${r.src}|${r.date}|${r.time}|${r.key}`;if(!r.orig)r.orig=origs.get(r.key)||'';if(!r.year)r.year=years.get(r.key)||''});
+  const vis=all.filter(r=>r.date&&!prefs.hidden[r.key]&&!prefs.slots[r.slot]&&!(prefs.sk&&r.sk)&&!(prefs.kids&&r.kids)&&!(prefs.dub&&r.dub));
   const days=[...new Set(enabled.flatMap(s=>cache.src[s].dates).concat(vis.map(r=>r.date)))].sort(),idx=d=>days.indexOf(d);
   // last day where every enabled source has data
   let lastKnown=-1;days.forEach((d,i)=>{if(enabled.every(s=>cache.src[s].rows.some(r=>r.date===d)))lastKnown=i});
@@ -140,12 +144,12 @@ function render(){
   let h='';
   for(const d of days){
     const rs=(byDay.get(d)||[]).sort((a,b)=>a.time.localeCompare(b.time)||a.title.localeCompare(b.title));if(!rs.length)continue;
-    h+=`<h2>${new Date(d+'T12:00').toLocaleDateString('sk-SK',{weekday:'long',day:'numeric',month:'numeric'})}</h2><div class="grid">`;
+    h+=`<div class="dh"><h2>${new Date(d+'T12:00').toLocaleDateString('sk-SK',{weekday:'long',day:'numeric',month:'numeric'})}</h2><button class="dd" data-day="${d}" title="Skryť všetky termíny tohto dňa (Ctrl+Z späť)">Vymazať všetky termíny dňa</button></div><div class="grid">`;
     for(const r of rs){
       const L=last.get(r.key),end=L-idx(r.date)<=1&&L<=lastKnown-3;
       const main=r.orig||r.title,sub=r.orig&&norm(r.orig)!==r.key?r.title:'';
-      h+=`<a class="card${end?' end':''}" href="${esc(r.url)}" target="_blank" rel="noopener" data-k="${esc(r.key)}" data-n="${esc(main)}">
-        <button class="hide" title="Skryť film">${EYE}</button><div class="t">${esc(main)}</div>${sub?`<div class="s">${esc(sub)}</div>`:''}
+      h+=`<a class="card${end?' end':''}" href="${esc(r.url)}" target="_blank" rel="noopener" data-k="${esc(r.key)}" data-n="${esc(main)}" data-s="${esc(r.slot)}">
+        <button class="hide" title="Skryť film úplne">${EYE}</button><button class="del" title="Skryť len tento termín">${TRASH}</button><div class="t">${esc(main)}</div>${sub?`<div class="s">${esc(sub)}</div>`:''}
         <div class="m"><span class="time">${esc(r.time)}</span><span>${esc(r.year)}</span><span>${r.len?esc(r.len)+' min':''}</span><span>${SRC[r.src]}</span>${end?'<span class="tag">posledné dni</span>':''}</div></a>`;
     }
     h+='</div>';
@@ -160,12 +164,16 @@ function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clea
 // ---------- Events ----------
 document.addEventListener('click',e=>{
   const hb=e.target.closest('.hide');
-  if(hb){e.preventDefault();e.stopPropagation();const c=hb.closest('.card');prefs.hidden[c.dataset.k]=c.dataset.n;undo.push(c.dataset.k);savePrefs();render();toast('Skryté: '+c.dataset.n+' (Ctrl+Z späť)');return}
+  if(hb){e.preventDefault();e.stopPropagation();const c=hb.closest('.card');prefs.hidden[c.dataset.k]=c.dataset.n;undo.push({h:c.dataset.k});savePrefs();render();toast('Skryté: '+c.dataset.n+' (Ctrl+Z späť)');return}
+  const db=e.target.closest('.del');
+  if(db){e.preventDefault();e.stopPropagation();const k=db.closest('.card').dataset.s;prefs.slots[k]=1;undo.push({s:[k]});savePrefs();render();toast('Termín skrytý (Ctrl+Z späť)');return}
+  const dd=e.target.closest('.dd');
+  if(dd){const ks=[...document.querySelectorAll('.card')].filter(c=>c.dataset.s.split('|')[1]===dd.dataset.day).map(c=>c.dataset.s);ks.forEach(k=>prefs.slots[k]=1);undo.push({s:ks});savePrefs();render();toast(`Skrytých termínov: ${ks.length} (Ctrl+Z späť)`);return}
   const un=e.target.closest('[data-un]');if(un){delete prefs.hidden[un.dataset.un];savePrefs();render()}
 });
 document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)){
-    const k=undo.pop();if(k){e.preventDefault();delete prefs.hidden[k];savePrefs();render();toast('Vrátené späť')}
+    const u=undo.pop();if(u){e.preventDefault();if(u.h)delete prefs.hidden[u.h];(u.s||[]).forEach(k=>delete prefs.slots[k]);savePrefs();render();toast('Vrátené späť')}
   }
 });
 document.querySelectorAll('[data-p]').forEach(i=>{i.checked=prefs[i.dataset.p];i.onchange=()=>{prefs[i.dataset.p]=i.checked;savePrefs();render()}});
