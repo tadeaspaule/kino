@@ -148,19 +148,25 @@ function render(){
   const vis=all.filter(r=>r.date&&!prefs.hidden[r.key]&&!prefs.slots[r.slot]&&!isBusy(r)&&!(prefs.sk&&r.sk)&&!(prefs.kids&&r.kids)&&!(prefs.dub&&r.dub));
   const days=[...new Set(enabled.flatMap(s=>cache.src[s].dates).concat(vis.map(r=>r.date)))].sort(),idx=d=>days.indexOf(d);
   // last day where every enabled source has data
-  let lastKnown=-1;days.forEach((d,i)=>{if(enabled.every(s=>cache.src[s].rows.some(r=>r.date===d)))lastKnown=i});
-  const last=new Map();vis.forEach(r=>last.set(r.key,Math.max(last.get(r.key)??-1,idx(r.date))));
+  // "ending" = the last 2 visible slots of a movie within one chain (Lumière / Cinema City), when no visible slot
+  // follows for >=3 days of that chain's known data (a day is known when every enabled cinema of the chain has data)
+  const CH=r=>r.src==='lum'?'lum':'cc',CHS={lum:['lum'],cc:['aup','eur']},lastKnown={};
+  for(const c in CHS){const en=CHS[c].filter(s=>enabled.includes(s));lastKnown[c]=-1;if(en.length)days.forEach((d,i)=>{if(en.every(s=>cache.src[s].rows.some(r=>r.date===d)))lastKnown[c]=i})}
+  const grp=new Map(),endRows=new Set();
+  vis.forEach(r=>{const g=r.key+'|'+CH(r);(grp.get(g)||grp.set(g,[]).get(g)).push(r)});
+  grp.forEach(rs=>{rs.sort((a,b)=>idx(a.date)-idx(b.date)||toMin(a.time)-toMin(b.time));
+    if(idx(rs.at(-1).date)<=lastKnown[CH(rs[0])]-3)rs.slice(-2).forEach(r=>endRows.add(r))});
   const byDay=new Map();vis.forEach(r=>{(byDay.get(r.date)||byDay.set(r.date,[]).get(r.date)).push(r)});
   let h='';
   for(const d of days){
     const rs=(byDay.get(d)||[]).sort((a,b)=>a.time.localeCompare(b.time)||a.title.localeCompare(b.title));if(!rs.length)continue;
     h+=`<div class="dh"><h2>${new Date(d+'T12:00').toLocaleDateString('sk-SK',{weekday:'long',day:'numeric',month:'numeric'})}</h2><button class="dd" data-day="${d}" title="Skryť všetky termíny tohto dňa (Ctrl+Z späť)">Vymazať všetky termíny dňa</button></div><div class="grid">`;
     for(const r of rs){
-      const L=last.get(r.key),end=L-idx(r.date)<=1&&L<=lastKnown-3;
+      const end=endRows.has(r);
       const main=r.orig||r.title,sub=r.orig&&norm(r.orig)!==r.key?r.title:'';
       h+=`<a class="card${end?' end':''}" href="${esc(r.url)}" target="_blank" rel="noopener" data-k="${esc(r.key)}" data-n="${esc(main)}" data-s="${esc(r.slot)}">
         <button class="hide" title="Skryť film úplne">${EYE}</button><button class="del" title="Skryť len tento termín">${TRASH}</button><div class="t">${esc(main)}</div>${sub?`<div class="s">${esc(sub)}</div>`:''}
-        <div class="m"><span class="time">${esc(r.time)}</span><span>${esc(r.year)}</span><span>${r.len?esc(r.len)+' min':''}</span><span>${SRC[r.src]}</span>${end?'<span class="tag">posledné dni</span>':''}</div></a>`;
+        <div class="m"><span class="time">${esc(r.time)}</span><span>${esc(r.year)}</span><span>${r.len?esc(r.len)+' min':''}</span><span>${SRC[r.src]}</span>${end?`<span class="tag">posledné ${r.src==='lum'?'v Lumière':'v Cinema City'}</span>`:''}</div></a>`;
     }
     h+='</div>';
   }
