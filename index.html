@@ -32,22 +32,15 @@ h2{margin:24px 0 8px;font-size:17px;text-transform:capitalize}.grid{display:grid
   <label><input type="checkbox" data-s="lum"> Lumière</label>
   <label><input type="checkbox" data-s="aup"> CC Aupark</label>
   <label><input type="checkbox" data-s="eur"> CC Eurovea</label>
-  <button id="hbtn">Skryté (0)</button><button id="rbtn">Obnoviť dáta</button>
+  <button id="hbtn">Skryté (0)</button><button id="rbtn">Znovu načítať</button>
   <div id="status"></div>
 </div>
 <div id="panel">
   <b>Individuálne skryté filmy</b><ul id="hlist" style="list-style:none;padding:0"></ul>
-  <details><summary>Advanced</summary>
-    CORS proxy fallback (used only if a direct request fails; empty = off):
-    <input type="text" id="proxy">
-  </details>
 </div>
 <div id="out"></div><div id="toast"></div>
 <script>
 const SRC={lum:'Lumière',aup:'Cinema City Aupark',eur:'Cinema City Eurovea'};
-const CC_ID={aup:1012,eur:1010};
-const CC_BASE='https://www.cinemacity.sk/sk/data-api-service/v1/quickbook/10105/';
-const CC_PATHS=['film-events-dates/in-cinema/{id}/as-at-date/{d}?attr=&lang=sk_SK','film-events/in-cinema/{id}/at-date/{d}?attr=&lang=sk_SK'];
 const $=s=>document.querySelector(s), pad=n=>String(n).padStart(2,'0');
 const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -55,17 +48,10 @@ const norm=s=>(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const load=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}};
 const store=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){console.warn('storage',e)}};
-let prefs=Object.assign({sk:false,kids:false,dub:false,src:{lum:true,aup:true,eur:true},hidden:{},proxy:'https://corsproxy.io/?url='},load('kino.prefs',{}));
-let cache=load('kino.cache',{day:'',src:{}}); const undo=[]; let status=[];
+let prefs=Object.assign({sk:false,kids:false,dub:false,src:{lum:true,aup:true,eur:true},hidden:{}},load('kino.prefs',{}));
+let cache={day:'',src:{}}; const undo=[]; let status=[];
 const savePrefs=()=>store('kino.prefs',prefs);
 
-async function get(url,json){
-  const tryOne=async u=>{const r=await fetch(u,{signal:AbortSignal.timeout(15000)});if(!r.ok)throw new Error('HTTP '+r.status);return json?r.json():r.text()};
-  try{return await tryOne(url)}catch(e){
-    if(!prefs.proxy)throw e;
-    return await tryOne(prefs.proxy+encodeURIComponent(url));
-  }
-}
 const toMin=t=>{const m=(t||'').match(/(\d+):(\d+)/);return m?+m[1]*60+ +m[2]:-1};
 
 // ---------- Lumière ----------
@@ -115,31 +101,26 @@ function parseCC(j,src){
   });
 }
 
-// ---------- Gather (max once per day) ----------
-async function gather(force){
-  const today=iso(new Date());
-  if(force||cache.day!==today)cache={day:today,src:{}};
-  const need=Object.keys(SRC).filter(s=>prefs.src[s]&&!cache.src[s]);status=[];
-  if(!need.length)return;
-  if(need.includes('lum')){
-    try{const r=parseLum(await get('https://www.kino-lumiere.sk/'),new Date());cache.src.lum=r;status.push(`Lumière: ${r.rows.length} projekcií, ${r.dates.length} dní`);console.log('Lumière sample',r.rows.slice(0,3))}
-    catch(e){status.push('Lumière zlyhalo: '+e.message)}
-  }
-  let dates=cache.src.lum?.dates;if(!dates?.length){dates=[];for(let i=0;i<10;i++){const d=new Date();d.setDate(d.getDate()+i);dates.push(iso(d))}}
-  for(const s of need.filter(x=>x!=='lum')){
-    const rows=[],missing=[];
-    for(const d of dates){
-      let ok=false,err;
-      for(const p of CC_PATHS){
-        try{const r=parseCC(await get(CC_BASE+p.replace('{id}',CC_ID[s]).replace('{d}',d),true),s);rows.push(...r.filter(x=>x.date===d));ok=true;break}catch(e){err=e}
+// ---------- Load data.json (written daily by the GitHub Action) ----------
+async function gather(){
+  status=[];
+  try{
+    const r=await fetch('data.json',{cache:'no-cache'});if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json(),when=new Date(d.fetchedAt);cache={day:d.fetchedAt,src:{}};
+    (d.errors||[]).forEach(e=>status.push('scraper: '+e));
+    let lumDates=null;
+    if(d.lum){try{const x=parseLum(d.lum,when);cache.src.lum=x;lumDates=x.dates;status.push(`Lumière: ${x.rows.length} projekcií, ${x.dates.length} dní`);console.log('Lumière sample',x.rows.slice(0,3))}catch(e){status.push('Lumière: '+e.message)}}
+    for(const s of ['aup','eur']){
+      const days=(d.cc||{})[s]||{},rows=[];
+      for(const [date,j] of Object.entries(days)){
+        if(lumDates&&!lumDates.includes(date))continue;
+        try{rows.push(...parseCC(j,s).filter(x=>x.date===date))}catch(e){console.warn(s,date,e)}
       }
-      if(!ok||!rows.some(x=>x.date===d))missing.push(d.slice(5));
-      await sleep(250);
+      const want=lumDates||Object.keys(days).sort(),miss=want.filter(x=>!rows.some(r=>r.date===x));
+      if(rows.length)cache.src[s]={rows,dates:want};
+      status.push(`${SRC[s]}: ${rows.length} projekcií`+(miss.length?` (bez dát: ${miss.map(m=>m.slice(5)).join(', ')})`:''));
     }
-    if(rows.length)cache.src[s]={rows,dates};
-    status.push(`${SRC[s]}: ${rows.length} projekcií`+(missing.length?` (bez dát: ${missing.join(', ')})`:''));
-  }
-  store('kino.cache',cache);
+  }catch(e){status.push('data.json sa nepodarilo načítať ('+e.message+') – spusti workflow "scrape" v záložke Actions.')}
 }
 
 // ---------- Render ----------
@@ -172,7 +153,7 @@ function render(){
   $('#out').innerHTML=h||'<p>Žiadne projekcie (skontroluj filtre alebo stav vyššie).</p>';
   const hk=Object.entries(prefs.hidden);$('#hbtn').textContent=`Skryté (${hk.length})`;
   $('#hlist').innerHTML=hk.map(([k,n])=>`<li><span>${esc(n)}</span><button data-un="${esc(k)}">Zobraziť</button></li>`).join('')||'<li>Nič nie je skryté.</li>';
-  $('#status').textContent=status.join(' · ')+(cache.day?` · dáta z ${cache.day}`:'');
+  $('#status').textContent=status.join(' · ')+(cache.day?` · dáta z ${new Date(cache.day).toLocaleString('sk-SK')}`:'');
 }
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('on'),2000)}
 
@@ -188,11 +169,10 @@ document.addEventListener('keydown',e=>{
   }
 });
 document.querySelectorAll('[data-p]').forEach(i=>{i.checked=prefs[i.dataset.p];i.onchange=()=>{prefs[i.dataset.p]=i.checked;savePrefs();render()}});
-document.querySelectorAll('[data-s]').forEach(i=>{i.checked=prefs.src[i.dataset.s];i.onchange=async()=>{prefs.src[i.dataset.s]=i.checked;savePrefs();$('#status').textContent='Načítavam…';await gather();render()}});
+document.querySelectorAll('[data-s]').forEach(i=>{i.checked=prefs.src[i.dataset.s];i.onchange=()=>{prefs.src[i.dataset.s]=i.checked;savePrefs();render()}});
 $('#hbtn').onclick=()=>$('#panel').classList.toggle('open');
-$('#rbtn').onclick=async()=>{$('#status').textContent='Načítavam…';await gather(true);render()};
-$('#proxy').value=prefs.proxy;$('#proxy').onchange=e=>{prefs.proxy=e.target.value.trim();savePrefs()};
-(async()=>{render();if(cache.day!==iso(new Date())||Object.keys(SRC).some(s=>prefs.src[s]&&!cache.src[s])){$('#status').textContent='Načítavam…';await gather();render()}})();
+$('#rbtn').onclick=async()=>{$('#status').textContent='Načítavam…';await gather();render()};
+(async()=>{$('#status').textContent='Načítavam…';await gather();render()})();
 </script>
 </body>
 </html>
