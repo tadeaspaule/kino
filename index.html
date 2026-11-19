@@ -10,8 +10,8 @@
 *{box-sizing:border-box}body{margin:0;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);padding:16px;max-width:1200px;margin-inline:auto}
 .bar{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:10px 0;position:sticky;top:0;background:var(--bg);z-index:5;border-bottom:1px solid var(--bd)}
 .bar label{cursor:pointer;white-space:nowrap}button{font:inherit;cursor:pointer;border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:6px;padding:4px 10px}
-#status{color:var(--mut);font-size:13px;width:100%}#panel{display:none;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:12px;margin:12px 0}
-#panel.open{display:block}#panel li{display:flex;justify-content:space-between;gap:8px;padding:3px 0}
+#status{color:var(--mut);font-size:13px;width:100%}#panel,.panel{display:none;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:12px;margin:12px 0}
+#panel.open,.panel.open{display:block}.panel li{display:flex;justify-content:space-between;gap:8px;padding:3px 0}
 h2{margin:24px 0 8px;font-size:17px;text-transform:capitalize}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
 .card{position:relative;min-height:100px;display:block;color:inherit;text-decoration:none;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
 .card:hover{border-color:var(--acc)}.card.end{background:var(--red);border-color:var(--redb)}
@@ -20,7 +20,7 @@ h2{margin:24px 0 8px;font-size:17px;text-transform:capitalize}.grid{display:grid
 .hide,.del{position:absolute;right:6px;width:36px;height:36px;padding:0;display:none;align-items:center;justify-content:center;border-radius:50%}.hide{top:6px}.del{bottom:6px}
 .card:hover .hide,.card:hover .del{display:flex}@media(hover:none){.hide,.del{display:flex}}.hide svg,.del svg{width:20px;height:20px}.del:hover{color:var(--redb);border-color:var(--redb)}.dh{display:flex;align-items:center;gap:12px;margin:24px 0 8px}.dh h2{margin:0}.dd{font-size:13px;color:var(--mut)}
 #toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;opacity:0;transition:.2s;pointer-events:none}
-#toast.on{opacity:1}input[type=text]{width:100%;font:inherit;padding:4px}
+#toast.on{opacity:1}input[type=text]{width:100%;font:inherit;padding:4px}.bf{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:8px 0}.bf input[type=time]{font:inherit}.hint{color:var(--mut);font-size:13px}
 </style>
 </head>
 <body>
@@ -32,11 +32,18 @@ h2{margin:24px 0 8px;font-size:17px;text-transform:capitalize}.grid{display:grid
   <label><input type="checkbox" data-s="lum"> Lumière</label>
   <label><input type="checkbox" data-s="aup"> CC Aupark</label>
   <label><input type="checkbox" data-s="eur"> CC Eurovea</label>
-  <button id="hbtn">Skryté (0)</button><button id="rbtn">Znovu načítať</button>
+  <button id="hbtn">Skryté (0)</button><button id="bbtn">Obsadené časy (0)</button><button id="rbtn">Znovu načítať</button>
   <div id="status"></div>
 </div>
 <div id="panel">
   <b>Individuálne skryté filmy</b><ul id="hlist" style="list-style:none;padding:0"></ul>
+</div>
+<div id="bpanel" class="panel">
+  <b>Obsadené časy</b> <span class="hint">– termíny, ktoré v týchto oknách začínajú, sa len skryjú (nič sa nemaže, po odstránení okna sa vrátia).</span>
+  <div class="bf" id="bdays"></div>
+  <div class="bf">Od <input type="time" id="bfrom"> Do <input type="time" id="bto"> <button id="badd">Pridať</button></div>
+  <div class="hint">Prázdne „od“ = od začiatku dňa · prázdne „do“ = do konca dňa · obe prázdne = celý deň.</div>
+  <ul id="blist" style="list-style:none;padding:0"></ul>
 </div>
 <div id="out"></div><div id="toast"></div>
 <script>
@@ -48,10 +55,10 @@ const norm=s=>(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const load=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}};
 const store=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){console.warn('storage',e)}};
-let prefs=Object.assign({sk:false,kids:false,dub:false,src:{lum:true,aup:true,eur:true},hidden:{},slots:{}},load('kino.prefs',{}));
+let prefs=Object.assign({sk:false,kids:false,dub:false,src:{lum:true,aup:true,eur:true},hidden:{},slots:{},busy:[]},load('kino.prefs',{}));
 let cache={day:'',src:{}}; const undo=[]; let status=[];
 const savePrefs=()=>store('kino.prefs',prefs);
-prefs.slots=prefs.slots||{};Object.keys(prefs.slots).forEach(k=>{if(k.split('|')[1]<iso(new Date()))delete prefs.slots[k]});
+prefs.slots=prefs.slots||{};prefs.busy=prefs.busy||[];Object.keys(prefs.slots).forEach(k=>{if(k.split('|')[1]<iso(new Date()))delete prefs.slots[k]});
 
 const toMin=t=>{const m=(t||'').match(/(\d+):(\d+)/);return m?+m[1]*60+ +m[2]:-1};
 
@@ -129,13 +136,16 @@ async function gather(){
 // ---------- Render ----------
 const EYE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
 const TRASH='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
+const DAYS=['Nedeľa','Pondelok','Utorok','Streda','Štvrtok','Piatok','Sobota'],ORDER=[1,2,3,4,5,6,0];
+const isBusy=r=>{const wd=new Date(r.date+'T12:00').getDay(),t=toMin(r.time);return prefs.busy.some(b=>b.day===wd&&(!b.from||t>=toMin(b.from))&&(!b.to||t<toMin(b.to)))};
+const busyLabel=b=>DAYS[b.day]+' '+(!b.from&&!b.to?'celý deň':`${b.from||'od začiatku'} – ${b.to||'do konca'}`);
 function render(){
   const enabled=Object.keys(SRC).filter(s=>prefs.src[s]&&cache.src[s]);
   const all=enabled.flatMap(s=>cache.src[s].rows);
   const origs=new Map();all.forEach(r=>{if(r.orig)origs.set(norm(r.title),r.orig)});
   const years=new Map();all.forEach(r=>{if(r.src==='lum'&&r.year)years.set(norm(r.title),r.year)});
   all.forEach(r=>{r.key=norm(r.title);r.slot=`${r.src}|${r.date}|${r.time}|${r.key}`;if(!r.orig)r.orig=origs.get(r.key)||'';if(!r.year)r.year=years.get(r.key)||''});
-  const vis=all.filter(r=>r.date&&!prefs.hidden[r.key]&&!prefs.slots[r.slot]&&!(prefs.sk&&r.sk)&&!(prefs.kids&&r.kids)&&!(prefs.dub&&r.dub));
+  const vis=all.filter(r=>r.date&&!prefs.hidden[r.key]&&!prefs.slots[r.slot]&&!isBusy(r)&&!(prefs.sk&&r.sk)&&!(prefs.kids&&r.kids)&&!(prefs.dub&&r.dub));
   const days=[...new Set(enabled.flatMap(s=>cache.src[s].dates).concat(vis.map(r=>r.date)))].sort(),idx=d=>days.indexOf(d);
   // last day where every enabled source has data
   let lastKnown=-1;days.forEach((d,i)=>{if(enabled.every(s=>cache.src[s].rows.some(r=>r.date===d)))lastKnown=i});
@@ -157,6 +167,9 @@ function render(){
   $('#out').innerHTML=h||'<p>Žiadne projekcie (skontroluj filtre alebo stav vyššie).</p>';
   const hk=Object.entries(prefs.hidden);$('#hbtn').textContent=`Skryté (${hk.length})`;
   $('#hlist').innerHTML=hk.map(([k,n])=>`<li><span>${esc(n)}</span><button data-un="${esc(k)}">Zobraziť</button></li>`).join('')||'<li>Nič nie je skryté.</li>';
+  const bl=prefs.busy.map((b,i)=>({b,i})).sort((x,y)=>ORDER.indexOf(x.b.day)-ORDER.indexOf(y.b.day)||(x.b.from||'').localeCompare(y.b.from||''));
+  $('#blist').innerHTML=bl.map(({b,i})=>`<li><span>${esc(busyLabel(b))}</span><button data-rb="${i}">✕</button></li>`).join('')||'<li>Žiadne okná.</li>';
+  $('#bbtn').textContent=`Obsadené časy (${prefs.busy.length})`;
   $('#status').textContent=status.join(' · ')+(cache.day?` · dáta z ${new Date(cache.day).toLocaleString('sk-SK')}`:'');
 }
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('on'),2000)}
@@ -169,6 +182,7 @@ document.addEventListener('click',e=>{
   if(db){e.preventDefault();e.stopPropagation();const k=db.closest('.card').dataset.s;prefs.slots[k]=1;undo.push({s:[k]});savePrefs();render();toast('Termín skrytý (Ctrl+Z späť)');return}
   const dd=e.target.closest('.dd');
   if(dd){const ks=[...document.querySelectorAll('.card')].filter(c=>c.dataset.s.split('|')[1]===dd.dataset.day).map(c=>c.dataset.s);ks.forEach(k=>prefs.slots[k]=1);undo.push({s:ks});savePrefs();render();toast(`Skrytých termínov: ${ks.length} (Ctrl+Z späť)`);return}
+  const rb=e.target.closest('[data-rb]');if(rb){prefs.busy.splice(+rb.dataset.rb,1);savePrefs();render();return}
   const un=e.target.closest('[data-un]');if(un){delete prefs.hidden[un.dataset.un];savePrefs();render()}
 });
 document.addEventListener('keydown',e=>{
@@ -179,6 +193,15 @@ document.addEventListener('keydown',e=>{
 document.querySelectorAll('[data-p]').forEach(i=>{i.checked=prefs[i.dataset.p];i.onchange=()=>{prefs[i.dataset.p]=i.checked;savePrefs();render()}});
 document.querySelectorAll('[data-s]').forEach(i=>{i.checked=prefs.src[i.dataset.s];i.onchange=()=>{prefs.src[i.dataset.s]=i.checked;savePrefs();render()}});
 $('#hbtn').onclick=()=>$('#panel').classList.toggle('open');
+$('#bbtn').onclick=()=>$('#bpanel').classList.toggle('open');
+$('#bdays').innerHTML=ORDER.map(d=>`<label><input type="checkbox" value="${d}"> ${DAYS[d].slice(0,2)}</label>`).join(' ');
+$('#badd').onclick=()=>{
+  const days=[...document.querySelectorAll('#bdays input:checked')].map(i=>+i.value),from=$('#bfrom').value,to=$('#bto').value;
+  if(!days.length)return toast('Vyber aspoň jeden deň');
+  if(from&&to&&toMin(from)>=toMin(to))return toast('„Od“ musí byť pred „do“');
+  days.forEach(day=>{if(!prefs.busy.some(b=>b.day===day&&b.from===from&&b.to===to))prefs.busy.push({day,from,to})});
+  savePrefs();render();toast('Okno pridané');
+};
 $('#rbtn').onclick=async()=>{$('#status').textContent='Načítavam…';await gather();render()};
 (async()=>{$('#status').textContent='Načítavam…';await gather();render()})();
 </script>
